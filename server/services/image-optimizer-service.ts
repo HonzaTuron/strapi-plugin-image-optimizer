@@ -1,4 +1,4 @@
-import { ReadStream, createReadStream, createWriteStream } from "fs";
+import fs, { createReadStream, createWriteStream } from "fs";
 import { join } from "path";
 import sharp, { Sharp, Metadata } from "sharp";
 import { file as fileUtils } from '@strapi/utils';
@@ -170,12 +170,16 @@ async function writeStreamToFile(sharpsStream: Sharp, path: string) {
   });
 }
 
-async function getMetadata(readStream: ReadStream): Promise<Metadata> {
-  return new Promise((resolve, reject) => {
-    const sharpInstance = sharp();
-    sharpInstance.metadata().then(resolve).catch(reject);
-    readStream.pipe(sharpInstance);
-  });
+async function getMetadata(file): Promise<Metadata> {
+  if (!file.filepath && file.getStream) {
+    return new Promise((resolve, reject) => {
+      const pipeline = sharp();
+      pipeline.metadata().then(resolve).catch(reject);
+      file.getStream().pipe(pipeline);
+    });
+  }
+
+  return sharp(file.path || file.filepath).metadata();
 }
 
 function getFileName(sourceFile: File, sizeName: string) {
@@ -191,7 +195,64 @@ function getFileMimeType(sourceFile: File, format: OutputFormat) {
   return format === "original" ? sourceFile.mime : `image/${format}`;
 }
 
+async function optimize(file)  {
+  const {
+    replaceOriginal,
+    formats: [firstFormat] = defaultFormats,
+  } = settingsService.settings;
+
+  if (replaceOriginal) {
+    let transformer;
+    if (!file.filepath) {
+      transformer = sharp();
+    } else {
+      transformer = sharp(file.filepath);
+    }
+
+    // reduce image quality
+    transformer[firstFormat]({ quality: 80 });
+    // rotate image based on EXIF data
+    const filePath = join(file.tmpWorkingDirectory, `optimized-${file.hash}`);
+
+    let newInfo;
+    if (!file.filepath) {
+      transformer.on('info', (info) => {
+        newInfo = info;
+      });
+
+      await writeStreamToFile(file.getStream().pipe(transformer), filePath);
+    } else {
+      newInfo = await transformer.toFile(filePath);
+    }
+
+    const { width: newWidth, height: newHeight, size: newSize } = newInfo;
+
+    const newFile = { ...file };
+
+    newFile.getStream = () => fs.createReadStream(filePath);
+    newFile.filepath = filePath;
+
+    if (newSize > file.sizeInBytes) {
+      // Ignore optimization if output is bigger than original
+      return file;
+    }
+
+    return Object.assign(newFile, {
+      name: `${getFileName(file, 'original')}.${firstFormat}`,
+      width: newWidth,
+      height: newHeight,
+      size: fileUtils.bytesToKbytes(newSize),
+      sizeInBytes: newSize,
+      ext: `.${firstFormat}`,
+      mime: `image/${getFileMimeType(file, firstFormat)}`,
+    });
+  }
+
+  return file;
+}
+
 export default () => ({
   ...imageManipulation(),
   generateResponsiveFormats: optimizeImage,
+  optimize,
 });

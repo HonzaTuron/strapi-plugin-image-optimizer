@@ -23,6 +23,10 @@ export interface Config {
    * The quality of the generated images. Default is 80.
    */
   quality?: number;
+  /**
+   * When true, the original image will be replaced with the generated images. Default is false.
+   */
+  replaceOriginal?: boolean;
 }
 
 export interface ImageSize {
